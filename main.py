@@ -1,85 +1,209 @@
 # -*- coding: utf-8 -*-
-import requests
-import datetime
-import time
-import threading
+import logging
 import pytz
-from ics import Calendar
-from telegram import Bot
+import requests
+import threading
+import time
+from icalevents.icalevents import events as icalevents_fetch
+from datetime import datetime, timedelta
+from telegram import Bot, Update, ReplyKeyboardMarkup
+from telegram.ext import Updater, MessageHandler, Filters, CommandHandler, CallbackContext
+from flask import Flask
+from threading import Thread
 
-# === ÊÎÍÔ²ÃÓÐÀÖ²ß ===
+# Налаштування
 API_TOKEN = '7541705762:AAEkCpMBSJbakGN1mlgwC2UEui56Rm_w0h0'
-GROUP_ID = -29944289
+GROUP_ID = -1002194694251
 ICS_URL = 'https://calendar.google.com/calendar/ical/vvhhoorrbbaall%40gmail.com/public/basic.ics'
 TIMEZONE = 'Europe/Kyiv'
 
+# Логи
+logging.basicConfig(level=logging.INFO)
 bot = Bot(token=API_TOKEN)
 
-# === ÔÓÍÊÖ²¯ ===
+# Глобальні змінні
+sent_reminders = set()
+last_reminder_message_id = None
 
-def fetch_events():
+
+def fetch_events(day_offset=0):
     try:
-        r = requests.get(ICS_URL)
-        calendar = Calendar(r.text)
-        now = datetime.datetime.now(pytz.timezone(TIMEZONE))
-        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        today_end = today_start + datetime.timedelta(days=1)
+        tz = pytz.timezone(TIMEZONE)
+        start = datetime.now(tz).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=day_offset)
+        end = start + timedelta(days=1)
 
-        events_today = []
-        for event in calendar.timeline.start_after(today_start).on(today_start):
-            if today_start <= event.begin.astimezone(pytz.timezone(TIMEZONE)) < today_end:
-                events_today.append(event)
+        event_list = icalevents_fetch(url=ICS_URL, start=start, end=end)
+        result = []
 
-        return events_today
+        for event in event_list:
+            start_time = event.start.astimezone(tz)
+            end_time = event.end.astimezone(tz) if event.end else start_time + timedelta(minutes=30)
+            result.append({
+                'name': event.summary,
+                'start': start_time,
+                'end': end_time,
+                'description': event.description or ''
+            })
+
+        return sorted(result, key=lambda x: x['start'])
+
     except Exception as e:
-        print(f"[ERROR] Íå âäàëîñÿ îòðèìàòè ïîä³¿: {e}")
+        logging.error(f"Не вдалося отримати події: {e}")
         return []
 
-def format_event(event):
-    start = event.begin.astimezone(pytz.timezone(TIMEZONE)).strftime('%H:%M')
-    return f"?? {start} — {event.name or 'Áåç íàçâè'}"
 
-def send_daily_schedule():
-    events = fetch_events()
+def send_daily_summary():
+    events = fetch_events(0)
     if not events:
-        message = "Ñüîãîäí³ íåìàº çàïëàíîâàíèõ ïîä³é ??"
-    else:
-        message = "?? *Ñïèñîê çàâäàíü íà ñüîãîäí³:*\n\n"
-        message += "\n".join([format_event(e) for e in events])
-    bot.send_message(chat_id=GROUP_ID, text=message, parse_mode="Markdown")
+        bot.send_message(chat_id=GROUP_ID, text="Сьогодні немає запланованих подій.")
+        return
 
-def schedule_checker():
-    notified = set()
+    message = "📅 *План на сьогодні:*\n\n"
+    for event in events:
+        message += f"🕗 {event['start'].strftime('%H:%M')} — {event['name']}\n"
+
+    msg = bot.send_message(chat_id=GROUP_ID, text=message, parse_mode='Markdown')
+    schedule_deletion(msg.chat_id, msg.message_id, hours=4)
+
+
+def send_event_reminders():
+    global last_reminder_message_id
+
+    events = fetch_events(0)
+    now = datetime.now(pytz.timezone(TIMEZONE)).replace(second=0, microsecond=0)
+
+    for event in events:
+        reminder_time = (event['start'] - timedelta(minutes=5)).replace(second=0, microsecond=0)
+        if abs((reminder_time - now).total_seconds()) <= 60:
+            uid = f"{event['name']}_{event['start']}"
+            if uid not in sent_reminders:
+                msg = f"⏰ Нагадування!\n{event['name']} о {event['start'].strftime('%H:%M')}"
+
+                try:
+                    if last_reminder_message_id:
+                        bot.delete_message(chat_id=GROUP_ID, message_id=last_reminder_message_id)
+
+                    message = bot.send_message(chat_id=GROUP_ID, text=msg)
+                    last_reminder_message_id = message.message_id
+                    sent_reminders.add(uid)
+                except Exception as e:
+                    logging.error(f"Не вдалося надіслати або видалити нагадування: {e}")
+
+
+def schedule_deletion(chat_id, message_id, hours=4):
+    def delete():
+        time.sleep(hours * 3600)
+        try:
+            bot.delete_message(chat_id=chat_id, message_id=message_id)
+        except Exception as e:
+            logging.warning(f"Не вдалося видалити повідомлення: {e}")
+    threading.Thread(target=delete).start()
+
+
+def scheduler():
     while True:
-        now = datetime.datetime.now(pytz.timezone(TIMEZONE))
+        try:
+            now = datetime.now(pytz.timezone(TIMEZONE)).replace(second=0, microsecond=0)
+            if now.hour == 7 and now.minute == 55:
+                send_daily_summary()
+            send_event_reminders()
+            time.sleep(60)
+        except Exception as e:
+            logging.error(f"[scheduler] Помилка: {e}")
+            time.sleep(10)
 
-        # Ùîäåííå ïîâ³äîìëåííÿ î 07:55
-        if now.hour == 7 and now.minute == 55 and "daily" not in notified:
-            send_daily_schedule()
-            notified.add("daily")
 
-        # Î÷èùåííÿ ïðàïîð³â íà íîâèé äåíü
-        if now.hour == 0 and now.minute == 1:
-            notified.clear()
+def show_menu(update: Update, context: CallbackContext):
+    keyboard = [
+        ["📌 Поточне завдання"],
+        ["📅 Завдання на день"],
+        ["📆 Завдання на завтра"]
+    ]
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    update.message.reply_text("Привіт! Обери опцію:", reply_markup=reply_markup)
 
-        # Ïåðåâ³ðêà íà ïîä³¿ ÷åðåç 5 õâ
-        events = fetch_events()
-        for event in events:
-            start = event.begin.astimezone(pytz.timezone(TIMEZONE))
-            delta = (start - now).total_seconds()
-            uid = f"{event.uid}_{start.strftime('%Y%m%d%H%M')}"
-            if 240 <= delta <= 300 and uid not in notified:  # ì³æ 4 ³ 5 õâèëèíàìè
-                bot.send_message(
-                    chat_id=GROUP_ID,
-                    text=f"?? ×åðåç 5 õâèëèí: *{event.name or 'Áåç íàçâè'}* î {start.strftime('%H:%M')}",
-                    parse_mode="Markdown"
+
+def handle_text(update: Update, context: CallbackContext):
+    text = update.message.text
+    now = datetime.now(pytz.timezone(TIMEZONE))
+
+    try:
+        if text == "📌 Поточне завдання":
+            events = fetch_events(0)
+            current_event = next((e for e in events if e['start'] <= now <= e['end']), None)
+            if current_event:
+                description = f"\n📝 {current_event['description']}" if current_event['description'] else ""
+                msg = (
+                    f"🔄 Поточне завдання:\n"
+                    f"🕘 {current_event['start'].strftime('%H:%M')}–{current_event['end'].strftime('%H:%M')}\n"
+                    f"📌 {current_event['name']}{description}"
                 )
-                notified.add(uid)
+            else:
+                msg = "Зараз немає активних завдань."
 
-        time.sleep(30)
+            sent_msg = context.bot.send_message(chat_id=update.effective_chat.id, text=msg)
+            schedule_deletion(sent_msg.chat_id, sent_msg.message_id, hours=4)
 
-# === ÑÒÀÐÒ ===
+        elif text == "📅 Завдання на день":
+            events = fetch_events(0)
+            if not events:
+                context.bot.send_message(chat_id=update.effective_chat.id, text="Сьогодні немає запланованих подій.")
+                return
 
-if __name__ == "__main__":
-    print("? Áîò çàïóùåíî.")
-    threading.Thread(target=schedule_checker).start()
+            msg = "📅 *Сьогоднішні завдання:*\n\n"
+            for event in events:
+                msg += f"🕗 {event['start'].strftime('%H:%M')} — {event['name']}\n"
+
+            sent_msg = context.bot.send_message(chat_id=update.effective_chat.id, text=msg, parse_mode='Markdown')
+            schedule_deletion(sent_msg.chat_id, sent_msg.message_id, hours=4)
+
+        elif text == "📆 Завдання на завтра":
+            events = fetch_events(1)
+            if not events:
+                context.bot.send_message(chat_id=update.effective_chat.id, text="Завтра немає запланованих подій.")
+                return
+
+            msg = "📆 *Завтра:*\n\n"
+            for event in events:
+                msg += f"🕗 {event['start'].strftime('%H:%M')} — {event['name']}\n"
+
+            sent_msg = context.bot.send_message(chat_id=update.effective_chat.id, text=msg, parse_mode='Markdown')
+            schedule_deletion(sent_msg.chat_id, sent_msg.message_id, hours=4)
+
+    except Exception as e:
+        logging.error(f"[handle_text] Помилка: {e}")
+
+
+def keep_alive():
+    app = Flask('')
+
+    @app.route('/')
+    def home():
+        return "I'm alive!"
+
+    def run():
+        app.run(host='0.0.0.0', port=8080)
+
+    Thread(target=run).start()
+
+
+def main():
+    try:
+        updater = Updater(API_TOKEN, use_context=True)
+        dp = updater.dispatcher
+
+        dp.add_handler(CommandHandler("start", show_menu))
+        dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_text))
+
+        threading.Thread(target=scheduler, daemon=True).start()
+
+        updater.start_polling()
+        logging.info("Бот запущено")
+        updater.idle()
+    except Exception as e:
+        logging.critical(f"[main] Критична помилка: {e}")
+
+
+if __name__ == '__main__':
+    keep_alive()
+    main()
