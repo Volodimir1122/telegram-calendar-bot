@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import requests
 import datetime
 import time
@@ -6,7 +7,7 @@ import pytz
 from ics import Calendar
 from telegram import Bot
 
-# === КОНФІГУРАЦІЯ ===
+# === ГЉГЋГЌГ”ВІГѓГ“ГђГЂГ–ВІГџ ===
 API_TOKEN = '7541705762:AAEkCpMBSJbakGN1mlgwC2UEui56Rm_w0h0'
 GROUP_ID = -29944289
 ICS_URL = 'https://calendar.google.com/calendar/ical/vvhhoorrbbaall%40gmail.com/public/basic.ics'
@@ -14,7 +15,7 @@ TIMEZONE = 'Europe/Kyiv'
 
 bot = Bot(token=API_TOKEN)
 
-# === ФУНКЦІЇ ===
+# === Г”Г“ГЌГЉГ–ВІВЇ ===
 
 def fetch_events():
     try:
@@ -31,19 +32,19 @@ def fetch_events():
 
         return events_today
     except Exception as e:
-        print(f"[ERROR] Не вдалося отримати події: {e}")
+        print(f"[ERROR] ГЌГҐ ГўГ¤Г Г«Г®Г±Гї Г®ГІГ°ГЁГ¬Г ГІГЁ ГЇГ®Г¤ВіВї: {e}")
         return []
 
 def format_event(event):
     start = event.begin.astimezone(pytz.timezone(TIMEZONE)).strftime('%H:%M')
-    return f"?? {start} — {event.name or 'Без назви'}"
+    return f"?? {start} вЂ” {event.name or 'ГЃГҐГ§ Г­Г Г§ГўГЁ'}"
 
 def send_daily_schedule():
     events = fetch_events()
     if not events:
-        message = "Сьогодні немає запланованих подій ??"
+        message = "Г‘ГјГ®ГЈГ®Г¤Г­Ві Г­ГҐГ¬Г Вє Г§Г ГЇГ«Г Г­Г®ГўГ Г­ГЁГµ ГЇГ®Г¤ВіГ© ??"
     else:
-        message = "?? *Список завдань на сьогодні:*\n\n"
+        message = "?? *Г‘ГЇГЁГ±Г®ГЄ Г§Г ГўГ¤Г Г­Гј Г­Г  Г±ГјГ®ГЈГ®Г¤Г­Ві:*\n\n"
         message += "\n".join([format_event(e) for e in events])
     bot.send_message(chat_id=GROUP_ID, text=message, parse_mode="Markdown")
 
@@ -52,33 +53,33 @@ def schedule_checker():
     while True:
         now = datetime.datetime.now(pytz.timezone(TIMEZONE))
 
-        # Щоденне повідомлення о 07:55
+        # Г™Г®Г¤ГҐГ­Г­ГҐ ГЇГ®ГўВіГ¤Г®Г¬Г«ГҐГ­Г­Гї Г® 07:55
         if now.hour == 7 and now.minute == 55 and "daily" not in notified:
             send_daily_schedule()
             notified.add("daily")
 
-        # Очищення прапорів на новий день
+        # ГЋГ·ГЁГ№ГҐГ­Г­Гї ГЇГ°Г ГЇГ®Г°ВіГў Г­Г  Г­Г®ГўГЁГ© Г¤ГҐГ­Гј
         if now.hour == 0 and now.minute == 1:
             notified.clear()
 
-        # Перевірка на події через 5 хв
+        # ГЏГҐГ°ГҐГўВіГ°ГЄГ  Г­Г  ГЇГ®Г¤ВіВї Г·ГҐГ°ГҐГ§ 5 ГµГў
         events = fetch_events()
         for event in events:
             start = event.begin.astimezone(pytz.timezone(TIMEZONE))
             delta = (start - now).total_seconds()
             uid = f"{event.uid}_{start.strftime('%Y%m%d%H%M')}"
-            if 240 <= delta <= 300 and uid not in notified:  # між 4 і 5 хвилинами
+            if 240 <= delta <= 300 and uid not in notified:  # Г¬ВіГ¦ 4 Ві 5 ГµГўГЁГ«ГЁГ­Г Г¬ГЁ
                 bot.send_message(
                     chat_id=GROUP_ID,
-                    text=f"?? Через 5 хвилин: *{event.name or 'Без назви'}* о {start.strftime('%H:%M')}",
+                    text=f"?? Г—ГҐГ°ГҐГ§ 5 ГµГўГЁГ«ГЁГ­: *{event.name or 'ГЃГҐГ§ Г­Г Г§ГўГЁ'}* Г® {start.strftime('%H:%M')}",
                     parse_mode="Markdown"
                 )
                 notified.add(uid)
 
         time.sleep(30)
 
-# === СТАРТ ===
+# === Г‘Г’ГЂГђГ’ ===
 
 if __name__ == "__main__":
-    print("? Бот запущено.")
+    print("? ГЃГ®ГІ Г§Г ГЇГіГ№ГҐГ­Г®.")
     threading.Thread(target=schedule_checker).start()
