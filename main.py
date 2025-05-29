@@ -196,7 +196,8 @@ def main():
         dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_text))
 
         threading.Thread(target=scheduler, daemon=True).start()
-
+        now = datetime.now(pytz.timezone(TIMEZONE))
+        print(f"[DEBUG] Server time (Kyiv): {now}")
         updater.start_polling()
         logging.info("Бот запущено")
         updater.idle()
